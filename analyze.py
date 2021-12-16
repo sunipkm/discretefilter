@@ -131,27 +131,128 @@ class GaussFilter:
         if buf.IsFull() and num > 0:
             val += np.sum(self.gauss_coeff[buf.GetIndex()+1:buf.GetIndex() + num] * buf.data[-1:buf.GetIndex():-1])
         return val / coeffs
+
 # %%
-buf = RingBuf(10)
-dat = RingBuf(10)
-ftr = GaussFilter(10, 2)
-for i in range(15):
-    buf.push(float(i))
-    dat.push(i)
-    buf[0] = ftr.ApplyFilter(buf)
-plt.plot(np.flip(buf[:]))
-plt.plot(np.flip(dat[:]))
-plt.show()
 # %%
-if len(sys.argv) != 3:
-    print("Invocation: %s <Order> <Cutoff Frequency>\n\n"%(sys.argv[0]))
-    sys.exit(0)
+class BesselFilter:
+    bessel_coeff = 0 
+    size = 0
+    norm = 0
+
+    def __init__(self, size, order, cutoff, dtype = float):
+        if size < 2:
+            raise Exception("Gaussian filter size cannot be < 2.")
+        if order > 10:
+            raise Exception("Order error")
+        coeff = np.zeros(size, dtype = dtype)
+        self.bessel_coeff = np.zeros(size, dtype = dtype)
+        self.size = size
+        
+        for i in range(order + 1):
+            coeff[i] = np.math.factorial(2 * order - i) / ((2 ** (order - i)) * np.math.factorial(i) * np.math.factorial(order - i))
+        
+        for ii in range(size):
+            pow_num = 1
+            for i in range(order + 1):
+                self.bessel_coeff[ii] += coeff[i] * pow_num
+                pow_num *= ii / cutoff
+            self.bessel_coeff[ii] = coeff[0] / self.bessel_coeff[ii]
+
+        self.norm = np.trapz(self.bessel_coeff)
+
+        return
+    
+    def ApplyFilter(self, buf: RingBuf):
+        if not buf.HasData():
+            raise Exception("Ring buffer not initialized")
+        
+        data = buf[:]
+        data = data[::-1]
+        data_ft = np.fft.fft(data, norm = 'ortho')
+        data_ft = np.fft.fftshift(data_ft)
+        freq = np.fft.fftshift(np.fft.fftfreq(data.shape[0]))
+        data_ft[np.where(np.abs(freq > 2.0/data.shape[0]))] = 0
+        # data_ft *= self.bessel_coeff[0:data_ft.shape[0]]
+        data = np.fft.ifft(data_ft, norm = 'ortho')
+        return data.real[0]
+
 # %%
-order = int(sys.argv[1])
-cutoff_freq = int(sys.argv[2])
+mes = 10.02
+mes_std = 0.1
+grad = -0.05
+gradgrad = 0.002
+deltaTime = 0.2 # 20 ms
+ftr = GaussFilter(64, 4)# GaussFilter(64, 2)
+data_real = RingBuf(64) # real data
+data_mes = RingBuf(64) # measured
+data_ftr = RingBuf(64) # filtered 
+grad_real = RingBuf(64) # real gradient
+grad_mes = RingBuf(64) # grad of measured data
+grad_ftr = RingBuf(64) # grad of filtered data
+grad_mes_ftr = RingBuf(64) # filtered grad of measured data
+grad_ftr_ftr = RingBuf(64) # filtered grad of filtered data
+
+data_real.push(mes)
+data_mes.push(np.random.normal(mes, mes_std))
+# data_ftr.push(data_mes[0])
+# data_ftr[0] = ftr.ApplyFilter(data_mes)
+mes += grad * deltaTime
+grad += gradgrad * deltaTime
+
+data_real.push(mes)
+data_mes.push(np.random.normal(mes, mes_std))
+# data_ftr.push(data_mes[0])
+# data_ftr[0] = ftr.ApplyFilter(data_mes)
+mes += grad * deltaTime
+grad += gradgrad * deltaTime
+
+absTime = 50
+timeNow = 0
+
+plot_mes = []
+plot_grad = []
+
+counter = 0
+
+while timeNow < absTime:
+    data_real.push(mes)
+    data_mes.push(np.random.normal(mes, mes_std))
+    data_ftr.push(data_mes[0])
+    # if counter > 64:
+    data_ftr[0] = ftr.ApplyFilter(data_ftr)
+
+    grad_real.push(grad)
+    grad_mes.push((data_mes[0] - data_mes[2]) / (2 * deltaTime))
+    # if counter > 64:
+    grad_ftr.push((data_ftr[0] - data_ftr[2]) / (2 * deltaTime))
+    grad_mes_ftr.push(grad_mes[0])
+    grad_mes_ftr[0] = ftr.ApplyFilter(grad_mes_ftr)
+    grad_ftr_ftr.push(grad_ftr[0])
+    grad_ftr_ftr[0] = ftr.ApplyFilter(grad_ftr_ftr)
+
+    plot_mes.append([timeNow, data_real[0], data_mes[0], data_ftr[0]])
+    plot_grad.append([timeNow, grad_real[0], grad_mes[0], grad_ftr[0], grad_mes_ftr[0], grad_ftr_ftr[0]])
+
+    mes += grad * deltaTime
+    grad += gradgrad * deltaTime
+    timeNow += deltaTime
+    counter += 1
+
+mesdata = np.array(plot_mes).transpose()
+graddata = np.array(plot_grad).transpose()
+
 # %%
-mes_fname = 'data_mes_%d_%d.txt'%(order, cutoff_freq)
-grad_fname = 'data_grad_%d_%d.txt'%(order, cutoff_freq)
+mesdata.shape
+# %%
+# if len(sys.argv) != 3:
+#     print("Invocation: %s <Order> <Cutoff Frequency>\n\n"%(sys.argv[0]))
+#     sys.exit(0)
+# %%
+order = 0 # int(sys.argv[1])
+cutoff_freq = 5 # int(sys.argv[2])
+# %%
+# mes_fname = 'data_mes_%d_%d.txt'%(order, cutoff_freq)
+# grad_fname = 'data_grad_%d_%d.txt'%(order, cutoff_freq)
 pagewidth = 11 * 1.5
 pageheight = 8.5 * 1.5
 # %%
@@ -159,8 +260,8 @@ def Gauss(x, A, B, C):
     y = A*np.exp(-1*((x - C)/B)**2)
     return y
 # %%
-mesdata = np.loadtxt(mes_fname, delimiter = ',').transpose()
-graddata = np.loadtxt(grad_fname, delimiter = ',').transpose()
+# mesdata = np.loadtxt(mes_fname, delimiter = ',').transpose()
+# graddata = np.loadtxt(grad_fname, delimiter = ',').transpose()
 # %%
 pdf = matplotlib.backends.backend_pdf.PdfPages('stat_%d_%d.pdf'%(order, cutoff_freq))
 # %%
